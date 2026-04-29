@@ -287,8 +287,8 @@ const nodeTypes = { glassNode: GlassNode };
 const edgeTypes = { labeledEdge: LabeledEdge };
 
 export default function SpatialChain() {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [isPending, startTransition] = React.useTransition();
   const [activeNodeId, setActiveNodeId] = useState<string>("root");
   
