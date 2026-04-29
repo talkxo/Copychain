@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useMemo, useEffect, startTransition, useLayoutEffect, createContext, useContext } from "react";
-import { ReactFlow, Background, useNodesState, useEdgesState, addEdge, Handle, Position, ReactFlowProvider, BackgroundVariant } from "@xyflow/react";
+import { ReactFlow, Background, useNodesState, useEdgesState, addEdge, Handle, Position, ReactFlowProvider, BackgroundVariant, Node, Edge } from "@xyflow/react";
 import type { Connection } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { motion, AnimatePresence } from "framer-motion";
@@ -363,8 +363,9 @@ export default function SpatialChain() {
           const activeCandidates = currentNodes.filter(n => n.data.isCandidate && n.data.parentId === activeNodeId && !n.data.isDiscarded);
           if (activeCandidates.length === data.outputOptions.length) {
             return currentNodes.map(n => {
-              if (n.data.isCandidate && n.data.parentId === activeNodeId && !n.data.isDiscarded) {
-                return { ...n, data: { ...n.data, text: data.outputOptions[n.data.candidateIndex] } };
+              const d = n.data as any;
+              if (d.isCandidate && d.parentId === activeNodeId && !d.isDiscarded) {
+                return { ...n, data: { ...d, text: data.outputOptions[d.candidateIndex] } };
               }
               return n;
             });
@@ -430,20 +431,21 @@ export default function SpatialChain() {
             occupiedRects.push({ x: columnX, y, w: NODE_W, h: NODE_H });
           }
 
-          const newNodes = data.outputOptions.map((opt: string, i: number) => ({
-            id: newIds[i],
-            type: "glassNode",
-            position: { x: columnX, y: placedYs[i] },
-            data: { 
-              text: opt, 
-              isActive: false, 
-              isCandidate: true, 
-              candidateIndex: i, 
-              parentId: activeNodeId,
-              status: "idle",
-              stepNumber: (activeNode.data.stepNumber || 1) + 1
-            },
-          }));
+            const activeData = activeNode.data as any;
+            const newNodes = data.outputOptions.map((opt: string, i: number) => ({
+              id: newIds[i],
+              type: "glassNode",
+              position: { x: columnX, y: placedYs[i] },
+              data: { 
+                text: opt, 
+                isActive: false, 
+                isCandidate: true, 
+                candidateIndex: i, 
+                parentId: activeNodeId,
+                status: "idle",
+                stepNumber: (activeData.stepNumber || 1) + 1
+              },
+            }));
 
           return [...currentNodes, ...newNodes];
         });
@@ -451,7 +453,7 @@ export default function SpatialChain() {
         if (!willUpdateInPlace) {
           setEdges(eds => {
             const newEds = [...eds];
-            newIds.forEach((newId) => {
+            newIds.forEach((newId: string) => {
               newEds.push({
                 id: `e-${activeNodeId}-${newId}`,
                 source: activeNodeId,
@@ -461,7 +463,7 @@ export default function SpatialChain() {
                 targetHandle: direction === "right" ? "left" : "right",
                 animated: true,
                 style: { strokeDasharray: "5 5", stroke: "rgba(0,0,0,0.2)", strokeWidth: 2 },
-                data: { label: activeNode.data.stepNumber || 1, promptText, isSolid: false, showLabel: showPathNumbers, isCandidate: true }
+                data: { label: (activeNode.data as any).stepNumber || 1, promptText, isSolid: false, showLabel: showPathNumbers, isCandidate: true }
               });
             });
             return newEds;
