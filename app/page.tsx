@@ -105,16 +105,16 @@ const ExpandingButton = ({ opt, onClick, expandDir = "left" }: { opt: any, onCli
 const LabeledEdge = ({ id, sourceX, sourceY, targetX, targetY, data, style, markerEnd }: any) => {
   const midX = (sourceX + targetX) / 2;
   const midY = (sourceY + targetY) / 2;
+  const dx = targetX - sourceX;
+  const dy = targetY - sourceY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
   
-  const angle = Math.atan2(targetY - sourceY, targetX - sourceX) * 180 / Math.PI;
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
   const isUpsideDown = Math.abs(angle) > 90;
 
   return (
     <>
       <path id={id} style={style} className="react-flow__edge-path" d={(() => {
-        const dx = targetX - sourceX;
-        const dy = targetY - sourceY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
         // Control point offset scales with distance — gives natural organic curves
         const cx = Math.max(80, Math.abs(dx) * 0.5);
         const cy = dy * 0.15; // slight vertical drift for personality
