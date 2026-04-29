@@ -34,10 +34,10 @@
   --background: #0f172a;
   --foreground: #f1f5f9;
   --muted: #94a3b8;
-  --surface: rgba(30, 41, 59, 0.7);
-  --surface-strong: rgba(255, 255, 255, 0.05);
-  --line: rgba(255, 255, 255, 0.06);
-  --line-strong: rgba(255, 255, 255, 0.12);
+  --surface: rgba(30, 41, 59, 0.4);
+  --surface-strong: rgba(255, 255, 255, 0.08);
+  --line: rgba(255, 255, 255, 0.04);
+  --line-strong: rgba(255, 255, 255, 0.1);
 }
 
 :root {
@@ -130,7 +130,15 @@ textarea, input, button {
 .node-box.active {
   background: var(--surface);
   box-shadow: 0 20px 60px -12px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme='light'] .node-box.active, [data-theme='warm'] .node-box.active {
   filter: brightness(1.04);
+}
+
+[data-theme='dark'] .node-box.active {
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 40px rgba(16, 185, 129, 0.1);
 }
 
 .node-box.past {
@@ -306,11 +314,16 @@ textarea, input, button {
   cursor: pointer;
   background: var(--surface);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(255,255,255,0.4);
-  transition: transform 0.2s ease;
+  border: 1px solid var(--line-strong);
+  transition: all 0.2s ease;
+  color: var(--foreground);
 }
 
-.fab:hover { transform: scale(1.1); background: rgba(255,255,255,0.8); }
+.fab:hover { 
+  transform: scale(1.1); 
+  background: var(--surface-strong);
+  border-color: var(--foreground);
+}
 .fab svg { width: 18px; height: 18px; }
 
 .notice {

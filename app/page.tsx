@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useMemo, useEffect, startTransition, useLayoutEffect, createContext, useContext } from "react";
-import { ReactFlow, Background, useNodesState, useEdgesState, addEdge, Handle, Position, ReactFlowProvider, BackgroundVariant, Node, Edge } from "@xyflow/react";
+import { ReactFlow, Background, useNodesState, useEdgesState, addEdge, Handle, Position, ReactFlowProvider, BackgroundVariant, Node, Edge, useReactFlow } from "@xyflow/react";
 import type { Connection } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { motion, AnimatePresence } from "framer-motion";
@@ -24,7 +24,9 @@ import {
   Heart,
   ChevronsLeft,
   Equal,
-  ChevronsRight
+  ChevronsRight,
+  Target,
+  Maximize
 } from "lucide-react";
 import { toPng } from "html-to-image";
 
@@ -54,6 +56,15 @@ const lengthOptions = [
 
 // --- Components ---
 
+const CenterViewButton = () => {
+  const { fitView } = useReactFlow();
+  return (
+    <div className="fab" onClick={() => fitView({ duration: 800, padding: 0.2 })} title="Center View">
+      <Maximize size={18} />
+    </div>
+  );
+};
+
 const ExpandingButton = ({ opt, onClick, expandDir = "left" }: { opt: any, onClick: () => void, expandDir?: "left" | "right" }) => {
   return (
     <button
@@ -66,9 +77,9 @@ const ExpandingButton = ({ opt, onClick, expandDir = "left" }: { opt: any, onCli
         gap: 0,
         height: "36px",
         borderRadius: "18px",
-        background: "rgba(255,255,255,0.75)",
+        background: "var(--surface)",
         backdropFilter: "blur(16px)",
-        border: "1px solid rgba(0,0,0,0.07)",
+        border: "1px solid var(--line-strong)",
         boxShadow: "0 2px 12px rgba(0,0,0,0.07)",
         padding: "0 10px",
         cursor: "pointer",
@@ -77,10 +88,10 @@ const ExpandingButton = ({ opt, onClick, expandDir = "left" }: { opt: any, onCli
         transition: "all 0.25s cubic-bezier(0.32,0.72,0,1)",
         minWidth: "36px",
       }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.95)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 20px rgba(0,0,0,0.1)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.75)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 2px 12px rgba(0,0,0,0.07)"; }}
+      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--surface-strong)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 20px rgba(0,0,0,0.1)"; }}
+      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "var(--surface)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 2px 12px rgba(0,0,0,0.07)"; }}
     >
-      <opt.Icon size={13} strokeWidth={2} style={{ color: "var(--foreground)", opacity: 0.55, flexShrink: 0 }} />
+      <opt.Icon size={13} strokeWidth={2.5} style={{ color: "var(--foreground)", opacity: 0.8, flexShrink: 0 }} />
       <span style={{
         maxWidth: 0,
         overflow: "hidden",
@@ -115,9 +126,8 @@ const LabeledEdge = ({ id, sourceX, sourceY, targetX, targetY, data, style, mark
   return (
     <>
       <path id={id} style={style} className="react-flow__edge-path" d={(() => {
-        // Control point offset scales with distance — gives natural organic curves
         const cx = Math.max(80, Math.abs(dx) * 0.5);
-        const cy = dy * 0.15; // slight vertical drift for personality
+        const cy = dy * 0.15;
         return `M${sourceX},${sourceY} C${sourceX + cx},${sourceY + cy} ${targetX - cx},${targetY - cy} ${targetX},${targetY}`;
       })()} markerEnd={markerEnd} />
       {(data?.isSolid || (data?.showLabel && !data?.isCandidate)) && (
@@ -287,6 +297,14 @@ const nodeTypes = { glassNode: GlassNode };
 const edgeTypes = { labeledEdge: LabeledEdge };
 
 export default function SpatialChain() {
+  return (
+    <ReactFlowProvider>
+      <FlowApp />
+    </ReactFlowProvider>
+  );
+}
+
+function FlowApp() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [isPending, startTransition] = React.useTransition();
@@ -359,7 +377,6 @@ export default function SpatialChain() {
         const promptText = (tone && tone !== "Original") ? tone : "Variation";
 
         setNodes(currentNodes => {
-          // In-place update if candidates already exist
           const activeCandidates = currentNodes.filter(n => n.data.isCandidate && n.data.parentId === activeNodeId && !n.data.isDiscarded);
           if (activeCandidates.length === data.outputOptions.length) {
             return currentNodes.map(n => {
@@ -371,20 +388,17 @@ export default function SpatialChain() {
             });
           }
 
-          // --- Smart Spatial Layout Engine ---
-          const NODE_W = 440; // node card width
-          const NODE_H = 200; // estimated node card height
-          const GAP_X = 110;  // horizontal gap between columns
-          const GAP_Y = 40;   // vertical gap between nodes
+          const NODE_W = 440; 
+          const NODE_H = 200; 
+          const GAP_X = 110;  
+          const GAP_Y = 40;   
 
-          // Auto-detect expansion direction: pick the side with the most horizontal clearance
           const rightX = activeNode.position.x + NODE_W + GAP_X;
           const leftX  = activeNode.position.x - NODE_W - GAP_X;
 
           const countNodesNear = (x: number) =>
             currentNodes.filter(n => Math.abs(n.position.x - x) < NODE_W).length;
 
-          // Use hinted direction but override if that side is too crowded
           const rightCount = countNodesNear(rightX);
           const leftCount  = countNodesNear(leftX);
           const finalDirection =
@@ -394,7 +408,6 @@ export default function SpatialChain() {
 
           const columnX = finalDirection === "right" ? rightX : leftX;
 
-          // Build a list of all occupied rectangles on the canvas
           const occupiedRects = currentNodes.map(n => ({
             x: n.position.x,
             y: n.position.y,
@@ -410,8 +423,6 @@ export default function SpatialChain() {
               y + NODE_H + GAP_Y > r.y
             );
 
-          // Place 3 nodes centred around the active node's Y,
-          // scanning outward if blocked.
           const STEP = NODE_H + GAP_Y;
           const candidateCount = data.outputOptions.length;
           const centerY = activeNode.position.y - Math.floor(candidateCount / 2) * STEP;
@@ -427,7 +438,6 @@ export default function SpatialChain() {
               tries++;
             }
             placedYs.push(y);
-            // Mark this slot as occupied for subsequent siblings
             occupiedRects.push({ x: columnX, y, w: NODE_W, h: NODE_H });
           }
 
@@ -462,7 +472,7 @@ export default function SpatialChain() {
                 sourceHandle: direction === "right" ? "right" : "left",
                 targetHandle: direction === "right" ? "left" : "right",
                 animated: true,
-                style: { strokeDasharray: "5 5", stroke: "rgba(0,0,0,0.2)", strokeWidth: 2 },
+                style: { strokeDasharray: "5 5", stroke: "var(--line-strong)", opacity: 0.6, strokeWidth: 2 },
                 data: { label: (activeNode.data as any).stepNumber || 1, promptText, isSolid: false, showLabel: showPathNumbers, isCandidate: true }
               });
             });
@@ -499,13 +509,11 @@ export default function SpatialChain() {
 
     setEdges(eds => eds.map(e => {
       if (e.target === selectedId) {
-        return { ...e, animated: false, style: { stroke: "rgba(0,0,0,0.5)", strokeWidth: 2.5 }, data: { ...e.data, isSolid: true, isCandidate: false } };
+        return { ...e, animated: false, style: { stroke: "var(--foreground)", opacity: 0.5, strokeWidth: 2.5 }, data: { ...e.data, isSolid: true, isCandidate: false } };
       }
-      // ONLY modify siblings (edges from the same parent as the selected node)
       if (e.source === parentId && e.target !== selectedId) {
-        return { ...e, animated: false, style: { stroke: "rgba(0,0,0,0.05)", strokeWidth: 1 }, data: { ...e.data, isSolid: false, isCandidate: true } };
+        return { ...e, animated: false, style: { stroke: "var(--line-strong)", opacity: 0.1, strokeWidth: 1 }, data: { ...e.data, isSolid: false, isCandidate: true } };
       }
-      // KEEP everything else (previous selections) as is
       return e;
     }));
 
@@ -535,13 +543,6 @@ export default function SpatialChain() {
     link.click();
   };
 
-  const [tipVisible, setTipVisible] = useState(true);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setTipVisible(false), 8000);
-    return () => clearTimeout(timer);
-  }, []);
-
   const contextValue = {
     updateNodeText,
     reactivateNode: (id: string) => setActiveNodeId(id),
@@ -552,7 +553,6 @@ export default function SpatialChain() {
   };
 
   return (
-    <ReactFlowProvider>
       <CanvasContext.Provider value={contextValue}>
         <div className="copy-canvas-container">
           <div className="brand" style={{ display: 'flex', alignItems: 'center' }}>
@@ -573,26 +573,9 @@ export default function SpatialChain() {
             }}>ALPHA</span>
           </div>
 
-          <AnimatePresence>
-            {tipVisible && (
-              <motion.div
-                drag
-                dragConstraints={{ top: 0, left: 0, right: 0, bottom: 0 }}
-                className="fixed top-8 left-1/2 -translate-x-1/2 z-[2000] glass p-1 pl-4 flex items-center gap-4 rounded-full border border-white/40 shadow-2xl cursor-grab active:cursor-grabbing"
-                initial={{ y: -100, x: "-50%", opacity: 0 }}
-                animate={{ y: 0, x: "-50%", opacity: 1 }}
-                exit={{ y: -100, x: "-50%", opacity: 0 }}
-              >
-                <span className="text-[0.65rem] font-bold uppercase tracking-widest opacity-60">Drag anywhere to move • Scroll to zoom</span>
-                <div 
-                  onClick={() => setTipVisible(false)}
-                  className="w-8 h-8 flex items-center justify-center rounded-full bg-black/5 hover:bg-black/10 cursor-pointer transition-colors"
-                >
-                  <Plus className="rotate-45" size={14} />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="corner-actions bottom-left">
+            <CenterViewButton />
+          </div>
 
           <div className="corner-actions top-right">
             <div className="fab" onClick={() => {
@@ -760,6 +743,5 @@ export default function SpatialChain() {
           </AnimatePresence>
         </div>
       </CanvasContext.Provider>
-    </ReactFlowProvider>
   );
 }
