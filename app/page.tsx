@@ -553,7 +553,23 @@ export default function SpatialChain() {
     <ReactFlowProvider>
       <CanvasContext.Provider value={contextValue}>
         <div className="copy-canvas-container">
-          <div className="brand">Spatial Chain 2.0</div>
+          <div className="brand" style={{ display: 'flex', alignItems: 'center' }}>
+            Copy Chain 
+            <span style={{ 
+              fontSize: '0.42rem', 
+              padding: '2px 5px', 
+              background: 'var(--foreground)', 
+              color: 'var(--background)',
+              borderRadius: '4px', 
+              letterSpacing: '0.08em',
+              fontWeight: 900,
+              marginLeft: '8px',
+              verticalAlign: 'middle',
+              display: 'inline-flex',
+              alignItems: 'center',
+              lineHeight: 1
+            }}>ALPHA</span>
+          </div>
 
           <AnimatePresence>
             {tipVisible && (
