@@ -1,19 +1,16 @@
 "use client";
 
-import React, { useState, useCallback, useMemo, useEffect, startTransition, useLayoutEffect, createContext, useContext } from "react";
+import React, { useState, useCallback, useEffect, useLayoutEffect, createContext, useContext, useRef } from "react";
 import { ReactFlow, Background, useNodesState, useEdgesState, addEdge, Handle, Position, ReactFlowProvider, BackgroundVariant, Node, Edge, useReactFlow } from "@xyflow/react";
 import type { Connection } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
+import {
   Plus,
-  Sparkles, 
-  RefreshCw,  
-  Map as MapIcon, 
+  Sparkles,
   Circle,
   Sun,
   Moon,
-  Settings,
   RotateCcw,
   ImageDown,
   Expand,
@@ -22,11 +19,11 @@ import {
   Zap,
   Flame,
   Heart,
-  ChevronsLeft,
+  ChevronsDown,
   Equal,
-  ChevronsRight,
-  Target,
-  Maximize
+  ChevronsUp,
+  Maximize,
+  Map as MapIcon,
 } from "lucide-react";
 import { toPng } from "html-to-image";
 
@@ -34,92 +31,52 @@ import { toPng } from "html-to-image";
 const CanvasContext = createContext<{
   updateNodeText: (id: string, text: string) => void;
   reactivateNode: (id: string) => void;
-  generateOptions: (tone: string, length: string, direction: "left" | "right") => void;
+  generateFromNode: (id: string, tone: string, length: string, direction: "left" | "right") => void;
   selectVersion: (id: string) => void;
-  hasActiveCandidates: boolean;
-  showPathNumbers: boolean;
+  activeNodeId: string;
+  isGenerating: boolean;
 } | null>(null);
 
 const toneOptions = [
   { label: "Professional", Icon: Briefcase },
-  { label: "Casual",       Icon: Coffee },
-  { label: "Witty",        Icon: Zap },
-  { label: "Punchy",       Icon: Flame },
-  { label: "Empathetic",   Icon: Heart },
+  { label: "Casual", Icon: Coffee },
+  { label: "Witty", Icon: Zap },
+  { label: "Punchy", Icon: Flame },
+  { label: "Empathetic", Icon: Heart },
 ];
 
 const lengthOptions = [
-  { label: "Short",  Icon: ChevronsLeft },
-  { label: "Medium", Icon: Equal },
-  { label: "Long",   Icon: ChevronsRight },
+  { label: "Shorter", Icon: ChevronsDown },
+  { label: "Same", Icon: Equal },
+  { label: "Longer", Icon: ChevronsUp },
 ];
 
-// --- Components ---
+// --- Storage ---
+const STORAGE_KEY = "copychain-state";
 
-const CenterViewButton = () => {
-  const { fitView } = useReactFlow();
-  return (
-    <div className="fab" onClick={() => fitView({ duration: 800, padding: 0.2 })} title="Center View">
-      <Maximize size={18} />
-    </div>
-  );
-};
+function saveToStorage(nodes: Node[], edges: Edge[], userContext: string, theme: string) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ nodes, edges, userContext, theme, ts: Date.now() }));
+  } catch {}
+}
 
-const ExpandingButton = ({ opt, onClick, expandDir = "left" }: { opt: any, onClick: () => void, expandDir?: "left" | "right" }) => {
-  return (
-    <button
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
-      className="nodrag"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        flexDirection: expandDir === "left" ? "row" : "row-reverse",
-        gap: 0,
-        height: "36px",
-        borderRadius: "18px",
-        background: "var(--surface)",
-        backdropFilter: "blur(16px)",
-        border: "1px solid var(--line-strong)",
-        boxShadow: "0 2px 12px rgba(0,0,0,0.07)",
-        padding: "0 10px",
-        cursor: "pointer",
-        overflow: "hidden",
-        whiteSpace: "nowrap",
-        transition: "all 0.25s cubic-bezier(0.32,0.72,0,1)",
-        minWidth: "36px",
-      }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--surface-strong)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 20px rgba(0,0,0,0.1)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "var(--surface)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 2px 12px rgba(0,0,0,0.07)"; }}
-    >
-      <opt.Icon size={13} strokeWidth={2.5} style={{ color: "var(--foreground)", opacity: 0.8, flexShrink: 0 }} />
-      <span style={{
-        maxWidth: 0,
-        overflow: "hidden",
-        fontSize: "0.58rem",
-        fontWeight: 700,
-        letterSpacing: "0.1em",
-        textTransform: "uppercase",
-        color: "var(--foreground)",
-        opacity: 0,
-        transition: "max-width 0.25s ease, opacity 0.2s ease, margin 0.25s ease",
-        marginLeft: expandDir === "left" ? 0 : 0,
-        marginRight: expandDir === "left" ? 0 : 0,
-      }}
-      className="toolbar-label"
-      >
-        {opt.label}
-      </span>
-    </button>
-  );
-};
+function loadFromStorage(): { nodes: Node[]; edges: Edge[]; userContext: string; theme: string } | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data.nodes?.length > 0) return data;
+  } catch {}
+  return null;
+}
 
+// --- Edge Component ---
 const LabeledEdge = ({ id, sourceX, sourceY, targetX, targetY, data, style, markerEnd }: any) => {
   const midX = (sourceX + targetX) / 2;
   const midY = (sourceY + targetY) / 2;
   const dx = targetX - sourceX;
   const dy = targetY - sourceY;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  
+
   const angle = Math.atan2(dy, dx) * 180 / Math.PI;
   const isUpsideDown = Math.abs(angle) > 90;
 
@@ -130,23 +87,26 @@ const LabeledEdge = ({ id, sourceX, sourceY, targetX, targetY, data, style, mark
         const cy = dy * 0.15;
         return `M${sourceX},${sourceY} C${sourceX + cx},${sourceY + cy} ${targetX - cx},${targetY - cy} ${targetX},${targetY}`;
       })()} markerEnd={markerEnd} />
-      {(data?.isSolid || (data?.showLabel && !data?.isCandidate)) && (
-        <foreignObject
-          width={240}
-          height={60}
-          x={midX - 120}
-          y={midY - 30}
-          className="edge-label-container"
-        >
-          <div className="flex items-center justify-center w-full h-full">
-            <div 
-              className={`edge-pill-wrapper ${dist < 220 ? 'is-compact' : ''}`}
-              style={{ transform: `rotate(${isUpsideDown ? angle + 180 : angle}deg)` }}
-            >
-              <div className="edge-pill">
-                <span className="step-num">{data?.label || 1}</span>
-                <span className="step-text">{data?.promptText || "Branch"}</span>
-              </div>
+      {data?.promptText && (
+        <foreignObject width={200} height={40} x={midX - 100} y={midY - 20} style={{ overflow: "visible", pointerEvents: "none" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" }}>
+            <div style={{
+              transform: `rotate(${isUpsideDown ? angle + 180 : angle}deg)`,
+              display: "inline-flex", alignItems: "center", gap: 6,
+              background: "var(--surface-strong)", backdropFilter: "blur(12px)",
+              border: "1px solid var(--line-strong)", padding: "3px 10px",
+              borderRadius: 99, whiteSpace: "nowrap",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+            }}>
+              <span style={{
+                background: "var(--foreground)", color: "var(--background)",
+                width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center",
+                borderRadius: "50%", fontSize: "0.45rem", fontWeight: 900, flexShrink: 0,
+              }}>{data?.label || 1}</span>
+              <span style={{
+                fontSize: "0.55rem", fontWeight: 800, textTransform: "uppercase",
+                letterSpacing: "0.08em", color: "var(--foreground)", opacity: 0.7,
+              }}>{data.promptText}</span>
             </div>
           </div>
         </foreignObject>
@@ -155,144 +115,154 @@ const LabeledEdge = ({ id, sourceX, sourceY, targetX, targetY, data, style, mark
   );
 };
 
+// --- Node Component ---
 const GlassNode = ({ id, data }: any) => {
-  const { updateNodeText, generateOptions, selectVersion, hasActiveCandidates, showPathNumbers } = useContext(CanvasContext)!;
-  const [isHoveringLeft, setIsHoveringLeft] = useState(false);
-  const [isHoveringRight, setIsHoveringRight] = useState(false);
-  const [previewPhase, setPreviewPhase] = useState<"visible" | "slidingOut" | "hidden">("visible");
-  const [hasPreviewed, setHasPreviewed] = useState(false);
+  const ctx = useContext(CanvasContext)!;
+  const isActive = id === ctx.activeNodeId;
+  const [selectedTone, setSelectedTone] = useState<string | null>(null);
+  const [selectedLength, setSelectedLength] = useState<string | null>(null);
 
   const adjustHeight = () => {
     const el = document.getElementById(`textarea-${id}`);
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = `${el.scrollHeight}px`;
-    }
+    if (el) { el.style.height = "auto"; el.style.height = `${el.scrollHeight}px`; }
   };
 
   useLayoutEffect(() => {
     adjustHeight();
-    const timeout = setTimeout(adjustHeight, 50);
-    return () => clearTimeout(timeout);
+    const t = setTimeout(adjustHeight, 50);
+    return () => clearTimeout(t);
   }, [data.text, data.isCandidate]);
 
   useEffect(() => {
-    if (!data.isActive || data.isCandidate) return;
-    
-    const wordCount = (data.text || "").trim().split(/\s+/).filter(Boolean).length;
-    
-    if (wordCount >= 2 && !hasPreviewed) {
-      setHasPreviewed(true);
-      setPreviewPhase("slidingOut");
-      
-      const hideTimer = setTimeout(() => {
-        setPreviewPhase("hidden");
-      }, 2500);
-      
-      return () => clearTimeout(hideTimer);
-    }
-  }, [data.text, data.isActive, hasPreviewed, data.isCandidate]);
+    if (isActive) { setSelectedTone(null); setSelectedLength(null); }
+  }, [isActive]);
 
+  const hasText = (data.text || "").trim().length > 0;
+  const showToolbar = isActive && hasText && !data.isCandidate && data.status !== "loading";
+
+  const handleGenerate = (tone: string, length: string) => {
+    ctx.generateFromNode(id, tone, length, "right");
+  };
+
+  const handleToneClick = (tone: string) => {
+    setSelectedTone(tone);
+    if (selectedLength) handleGenerate(tone, selectedLength);
+  };
+
+  const handleLengthClick = (length: string) => {
+    setSelectedLength(length);
+    if (selectedTone) handleGenerate(selectedTone, length);
+  };
+
+  // Candidate node
   if (data.isCandidate) {
     return (
-      <div className={`node-wrapper ${data.isDiscarded ? "opacity-30 grayscale pointer-events-auto" : ""}`}>
+      <div className={`node-wrapper ${data.isDiscarded ? "is-discarded" : ""}`}>
         <Handle type="target" position={Position.Left} id="left" style={{ opacity: 0 }} />
         <Handle type="target" position={Position.Right} id="right" style={{ opacity: 0 }} />
-        
-        <div 
-          className="node-box glass is-candidate" 
-          onClick={() => selectVersion(id)}
-        >
+        <div className="node-box glass is-candidate" onClick={() => !data.isDiscarded && ctx.selectVersion(id)}>
           <div className="candidate-label">
             <Sparkles size={10} />
-            <span>0{data.candidateIndex + 1}</span>
+            <span>Option {data.candidateIndex + 1}</span>
           </div>
           <p>{data.text}</p>
+          {!data.isDiscarded && (
+            <div className="candidate-hint">Click to use this version</div>
+          )}
         </div>
       </div>
     );
   }
 
-  const showLeftToolbar = data.isActive && !hasActiveCandidates && data.status !== "loading" && (previewPhase === "slidingOut" || isHoveringLeft);
-  const showRightToolbar = data.isActive && !hasActiveCandidates && data.status !== "loading" && (previewPhase === "slidingOut" || isHoveringRight);
-  const showHitboxes = data.isActive && previewPhase === "hidden" && !hasActiveCandidates && data.status !== "loading";
-
+  // Regular node
   return (
-    <div className={`node-wrapper ${data.isActive ? "active" : "past"}`}>
+    <div className={`node-wrapper ${isActive ? "active" : "past"}`}>
       <Handle type="target" position={Position.Left} id="left" style={{ opacity: 0 }} />
       <Handle type="source" position={Position.Left} id="left" style={{ opacity: 0 }} />
       <Handle type="target" position={Position.Right} id="right" style={{ opacity: 0 }} />
       <Handle type="source" position={Position.Right} id="right" style={{ opacity: 0 }} />
-      
-      <div 
-        className="hitbox-left" 
-        onMouseEnter={() => showHitboxes && setIsHoveringLeft(true)}
-        onMouseLeave={() => setIsHoveringLeft(false)}
-        style={{ pointerEvents: showLeftToolbar || showHitboxes || isHoveringLeft ? 'auto' : 'none' }}
-      >
-        <AnimatePresence>
-          {showLeftToolbar && (
-            <motion.div 
-              className="toolbar-left nodrag"
-              initial={{ opacity: 0, x: 20, y: "-50%" }}
-              animate={{ opacity: 1, x: 0, y: "-50%" }}
-              exit={{ opacity: 0, x: 20, y: "-50%" }}
-              transition={{ duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
-            >
-              {toneOptions.map(opt => (
-                <ExpandingButton key={opt.label} opt={opt} expandDir="left" onClick={() => generateOptions(opt.label, "Same length", "left")} />
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
 
-      <div 
-        className="hitbox-right" 
-        onMouseEnter={() => showHitboxes && setIsHoveringRight(true)}
-        onMouseLeave={() => setIsHoveringRight(false)}
-        style={{ pointerEvents: showRightToolbar || showHitboxes || isHoveringRight ? 'auto' : 'none' }}
+      <div
+        className={`node-box glass ${data.status === "loading" ? "is-loading" : ""} ${data.status === "success" ? "is-success" : ""} ${!isActive ? "is-past" : ""}`}
+        onClick={() => { if (!isActive) ctx.reactivateNode(id); }}
       >
-        <AnimatePresence>
-          {showRightToolbar && (
-            <motion.div 
-              className="toolbar-right nodrag"
-              initial={{ opacity: 0, x: -20, y: "-50%" }}
-              animate={{ opacity: 1, x: 0, y: "-50%" }}
-              exit={{ opacity: 0, x: -20, y: "-50%" }}
-              transition={{ duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
-            >
-              {lengthOptions.map(opt => (
-                <ExpandingButton key={opt.label} opt={opt} expandDir="right" onClick={() => generateOptions("Professional", opt.label, "right")} />
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      <div className={`node-box glass ${data.status === 'loading' ? 'is-loading' : ''} ${data.status === 'success' ? 'is-success' : ''}`}>
         <div className="node-header">
-          <div className="flex items-center gap-2">
-            <div className={`status-dot ${data.status}`} />
-            {showPathNumbers && <span className="text-[0.6rem] font-bold uppercase tracking-widest opacity-40">Step 0{data.stepNumber || 1}</span>}
+          <div className="node-header-left">
+            <div className={`status-dot ${data.status || "idle"}`} />
+            {data.stepNumber > 1 && <span className="step-label">Step {data.stepNumber}</span>}
           </div>
+          {!isActive && <span className="click-hint">Click to edit</span>}
         </div>
-        
+
         <textarea
           id={`textarea-${id}`}
           className="node-input nodrag"
           value={data.text}
-          onChange={(e) => updateNodeText(id, e.target.value)}
-          placeholder="Type your copy here..."
-          autoFocus={data.isActive}
+          onChange={(e) => ctx.updateNodeText(id, e.target.value)}
+          placeholder={isActive ? "Paste or type your copy here...\n\nA headline, email, ad copy, tweet — anything you want to rewrite." : ""}
+          autoFocus={isActive}
+          readOnly={!isActive}
         />
+
+        {/* Inline toolbar */}
+        <AnimatePresence>
+          {showToolbar && (
+            <motion.div
+              className="inline-toolbar nodrag"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
+            >
+              <div className="toolbar-section">
+                <span className="toolbar-label-text">Tone</span>
+                <div className="toolbar-chips">
+                  {toneOptions.map(opt => (
+                    <button
+                      key={opt.label}
+                      className={`chip ${selectedTone === opt.label ? "selected" : ""}`}
+                      onClick={(e) => { e.stopPropagation(); handleToneClick(opt.label); }}
+                    >
+                      <opt.Icon size={12} />
+                      <span>{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="toolbar-section">
+                <span className="toolbar-label-text">Length</span>
+                <div className="toolbar-chips">
+                  {lengthOptions.map(opt => (
+                    <button
+                      key={opt.label}
+                      className={`chip ${selectedLength === opt.label ? "selected" : ""}`}
+                      onClick={(e) => { e.stopPropagation(); handleLengthClick(opt.label); }}
+                    >
+                      <opt.Icon size={12} />
+                      <span>{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {!selectedTone && !selectedLength && (
+                <div className="toolbar-hint">Pick a tone + length to generate</div>
+              )}
+              {(selectedTone && !selectedLength) && (
+                <div className="toolbar-hint">Now pick a length</div>
+              )}
+              {(!selectedTone && selectedLength) && (
+                <div className="toolbar-hint">Now pick a tone</div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
       </div>
     </div>
   );
 };
 
 // --- Main App ---
-
 const nodeTypes = { glassNode: GlassNode };
 const edgeTypes = { labeledEdge: LabeledEdge };
 
@@ -307,441 +277,350 @@ export default function SpatialChain() {
 function FlowApp() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const [isPending, startTransition] = React.useTransition();
   const [activeNodeId, setActiveNodeId] = useState<string>("root");
-  
-  const [hasActiveCandidates, setHasActiveCandidates] = useState(false);
-  const [showPathNumbers, setShowPathNumbers] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [theme, setTheme] = useState<"light" | "warm" | "dark">("light");
+  const [showPathNumbers, setShowPathNumbers] = useState(true);
+  const [userContext, setUserContext] = useState("");
+  const [contextOpen, setContextOpen] = useState(false);
+  const [notice, setNotice] = useState("");
+  const { fitView } = useReactFlow();
+  const initialized = useRef(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
-  
-  const [userContext, setUserContext] = useState("");
-  const [contextOpen, setContextOpen] = useState(false);
-  const [notice, setNotice] = useState("");
 
-  const showNotice = (msg: string) => {
+  const showNotice = useCallback((msg: string, duration = 4000) => {
     setNotice(msg);
-    setTimeout(() => setNotice(""), 3000);
-  };
+    setTimeout(() => setNotice(""), duration);
+  }, []);
 
+  // Init: load from storage or create root
   useEffect(() => {
-    setNodes([{
-      id: "root",
-      type: "glassNode",
-      position: { x: window.innerWidth / 2 - 200, y: window.innerHeight / 2 - 100 },
-      data: { text: "", isActive: true, status: "idle", isCandidate: false, stepNumber: 1 },
-    }]);
-  }, [setNodes]);
+    if (initialized.current) return;
+    initialized.current = true;
+
+    const saved = loadFromStorage();
+    if (saved) {
+      setNodes(saved.nodes);
+      setEdges(saved.edges);
+      setUserContext(saved.userContext || "");
+      if (saved.theme) setTheme(saved.theme as any);
+      const active = saved.nodes.find((n: Node) => n.data.isActive);
+      if (active) setActiveNodeId(active.id);
+    } else {
+      setNodes([{
+        id: "root",
+        type: "glassNode",
+        position: { x: 0, y: 0 },
+        data: { text: "", isActive: true, status: "idle", isCandidate: false, stepNumber: 1 },
+      }]);
+    }
+    setTimeout(() => fitView({ duration: 400, padding: 0.3 }), 100);
+  }, [setNodes, setEdges, fitView]);
+
+  // Auto-save
+  useEffect(() => {
+    if (!initialized.current) return;
+    const t = setTimeout(() => saveToStorage(nodes, edges, userContext, theme), 500);
+    return () => clearTimeout(t);
+  }, [nodes, edges, userContext, theme]);
 
   const updateNodeText = useCallback((id: string, text: string) => {
-    setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, text } } : n)));
+    setNodes(nds => nds.map(n => n.id === id ? { ...n, data: { ...n.data, text } } : n));
   }, [setNodes]);
 
   const setNodeStatus = useCallback((id: string, status: string) => {
-    setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, status } } : n)));
+    setNodes(nds => nds.map(n => n.id === id ? { ...n, data: { ...n.data, status } } : n));
   }, [setNodes]);
 
-  const generateOptions = useCallback((tone: string, length: string, direction: "left" | "right") => {
-    const activeNode = nodes.find((n) => n.id === activeNodeId);
-    if (!activeNode || !activeNode.data.text || isPending) return;
+  const reactivateNode = useCallback((id: string) => {
+    setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, isActive: n.id === id } })));
+    setActiveNodeId(id);
+  }, [setNodes]);
 
-    setNodeStatus(activeNodeId, "loading");
-    
-    startTransition(async () => {
-      try {
-        const response = await fetch("/api/generate-copy", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            currentText: activeNode.data.text as string,
-            tone,
-            length,
-            userContext,
-            recentSteps: [],
-          }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.error || "AI error");
-        
-        setNodeStatus(activeNodeId, "success");
-        setTimeout(() => setNodeStatus(activeNodeId, "idle"), 1500);
+  const generateFromNode = useCallback(async (nodeId: string, tone: string, length: string, direction: "left" | "right") => {
+    const currentNodes = nodes;
+    const activeNode = currentNodes.find(n => n.id === nodeId);
+    if (!activeNode || !activeNode.data.text || isGenerating) return;
 
-        const newIds = data.outputOptions.map(() => Math.random().toString(36).substr(2, 9));
-        
-        const activeCandidates = nodes.filter(n => n.data.isCandidate && n.data.parentId === activeNodeId && !n.data.isDiscarded);
-        const willUpdateInPlace = activeCandidates.length === data.outputOptions.length;
+    setIsGenerating(true);
+    setNodeStatus(nodeId, "loading");
 
-        const promptText = (tone && tone !== "Original") ? tone : "Variation";
+    try {
+      const response = await fetch("/api/generate-copy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentText: activeNode.data.text as string,
+          tone, length, userContext, recentSteps: [],
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Generation failed");
 
-        setNodes(currentNodes => {
-          const activeCandidates = currentNodes.filter(n => n.data.isCandidate && n.data.parentId === activeNodeId && !n.data.isDiscarded);
-          if (activeCandidates.length === data.outputOptions.length) {
-            return currentNodes.map(n => {
-              const d = n.data as any;
-              if (d.isCandidate && d.parentId === activeNodeId && !d.isDiscarded) {
-                return { ...n, data: { ...d, text: data.outputOptions[d.candidateIndex] } };
-              }
-              return n;
-            });
+      setNodeStatus(nodeId, "success");
+      setTimeout(() => setNodeStatus(nodeId, "idle"), 1500);
+
+      const newIds = data.outputOptions.map(() => Math.random().toString(36).substr(2, 9));
+      const promptText = tone;
+
+      const NODE_W = 420;
+      const NODE_H = 200;
+      const GAP_X = 140;
+      const GAP_Y = 40;
+      const STEP = NODE_H + GAP_Y;
+
+      setNodes(currentNodes => {
+        // Discard existing candidates for this node
+        const cleaned = currentNodes.map(n => {
+          if (n.data.isCandidate && n.data.parentId === nodeId) {
+            return { ...n, data: { ...n.data, isDiscarded: true } };
           }
-
-          const NODE_W = 440; 
-          const NODE_H = 200; 
-          const GAP_X = 110;  
-          const GAP_Y = 40;   
-
-          const rightX = activeNode.position.x + NODE_W + GAP_X;
-          const leftX  = activeNode.position.x - NODE_W - GAP_X;
-
-          const countNodesNear = (x: number) =>
-            currentNodes.filter(n => Math.abs(n.position.x - x) < NODE_W).length;
-
-          const rightCount = countNodesNear(rightX);
-          const leftCount  = countNodesNear(leftX);
-          const finalDirection =
-            direction === "right" && rightCount <= leftCount + 1 ? "right" :
-            direction === "left"  && leftCount  <= rightCount + 1 ? "left" :
-            rightCount <= leftCount ? "right" : "left";
-
-          const columnX = finalDirection === "right" ? rightX : leftX;
-
-          const occupiedRects = currentNodes.map(n => ({
-            x: n.position.x,
-            y: n.position.y,
-            w: NODE_W,
-            h: NODE_H,
-          }));
-
-          const isRectFree = (y: number) =>
-            !occupiedRects.some(r =>
-              columnX < r.x + r.w + GAP_X &&
-              columnX + NODE_W + GAP_X > r.x &&
-              y < r.y + r.h + GAP_Y &&
-              y + NODE_H + GAP_Y > r.y
-            );
-
-          const STEP = NODE_H + GAP_Y;
-          const candidateCount = data.outputOptions.length;
-          const centerY = activeNode.position.y - Math.floor(candidateCount / 2) * STEP;
-
-          const placedYs: number[] = [];
-
-          for (let i = 0; i < candidateCount; i++) {
-            let preferred = centerY + i * STEP;
-            let y = preferred;
-            let tries = 0;
-            while (!isRectFree(y) && tries < 40) {
-              y = preferred + (tries % 2 === 0 ? 1 : -1) * Math.ceil((tries + 1) / 2) * STEP;
-              tries++;
-            }
-            placedYs.push(y);
-            occupiedRects.push({ x: columnX, y, w: NODE_W, h: NODE_H });
-          }
-
-            const activeData = activeNode.data as any;
-            const newNodes = data.outputOptions.map((opt: string, i: number) => ({
-              id: newIds[i],
-              type: "glassNode",
-              position: { x: columnX, y: placedYs[i] },
-              data: { 
-                text: opt, 
-                isActive: false, 
-                isCandidate: true, 
-                candidateIndex: i, 
-                parentId: activeNodeId,
-                status: "idle",
-                stepNumber: (activeData.stepNumber || 1) + 1
-              },
-            }));
-
-          return [...currentNodes, ...newNodes];
+          return n;
         });
 
-        if (!willUpdateInPlace) {
-          setEdges(eds => {
-            const newEds = [...eds];
-            newIds.forEach((newId: string) => {
-              newEds.push({
-                id: `e-${activeNodeId}-${newId}`,
-                source: activeNodeId,
-                target: newId,
-                type: "labeledEdge",
-                sourceHandle: direction === "right" ? "right" : "left",
-                targetHandle: direction === "right" ? "left" : "right",
-                animated: true,
-                style: { strokeDasharray: "5 5", stroke: "var(--line-strong)", opacity: 0.6, strokeWidth: 2 },
-                data: { label: (activeNode.data as any).stepNumber || 1, promptText, isSolid: false, showLabel: showPathNumbers, isCandidate: true }
-              });
-            });
-            return newEds;
-          });
-        }
-        setHasActiveCandidates(true);
+        const rightX = activeNode.position.x + NODE_W + GAP_X;
+        const leftX = activeNode.position.x - NODE_W - GAP_X;
 
-      } catch (e) {
-        setNodeStatus(activeNodeId, "idle");
-        showNotice(e instanceof Error ? e.message : "Error generating options");
-      }
-    });
-  }, [activeNodeId, isPending, nodes, setNodeStatus, userContext, setNodes, setEdges, showPathNumbers]);
+        const countNodesNear = (x: number) =>
+          cleaned.filter(n => Math.abs(n.position.x - x) < NODE_W && !n.data.isDiscarded).length;
+        const rightCount = countNodesNear(rightX);
+        const leftCount = countNodesNear(leftX);
+        const finalDir = rightCount <= leftCount ? "right" : "left";
+        const columnX = finalDir === "right" ? rightX : leftX;
+
+        const candidateCount = data.outputOptions.length;
+        const centerY = activeNode.position.y - Math.floor(candidateCount / 2) * STEP;
+        const activeData = activeNode.data as any;
+
+        const newNodes = data.outputOptions.map((opt: string, i: number) => ({
+          id: newIds[i],
+          type: "glassNode",
+          position: { x: columnX, y: centerY + i * STEP },
+          data: {
+            text: opt, isActive: false, isCandidate: true,
+            candidateIndex: i, parentId: nodeId, status: "idle",
+            stepNumber: (activeData.stepNumber || 1) + 1,
+          },
+        }));
+
+        return [...cleaned, ...newNodes];
+      });
+
+      // Remove old candidate edges, add new ones
+      setEdges(eds => {
+        const cleaned = eds.filter(e => !(e.source === nodeId && e.data?.isCandidate));
+        const newEdges = newIds.map((newId: string) => ({
+          id: `e-${nodeId}-${newId}`,
+          source: nodeId,
+          target: newId,
+          type: "labeledEdge",
+          sourceHandle: "right",
+          targetHandle: "left",
+          animated: true,
+          style: { stroke: "var(--foreground)", opacity: 0.15, strokeWidth: 2 },
+          data: { label: (activeNode.data as any).stepNumber || 1, promptText, isCandidate: true },
+        }));
+        return [...cleaned, ...newEdges];
+      });
+
+      setTimeout(() => fitView({ duration: 600, padding: 0.2 }), 200);
+    } catch (e) {
+      setNodeStatus(nodeId, "idle");
+      showNotice(e instanceof Error ? e.message : "Error generating options");
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [nodes, isGenerating, userContext, setNodeStatus, setNodes, setEdges, fitView, showNotice]);
 
   const selectVersion = useCallback((selectedId: string) => {
-    const selectedNode = nodes.find(n => n.id === selectedId);
-    if (!selectedNode || !selectedNode.data.parentId) return;
+    setNodes(nds => {
+      const selected = nds.find(n => n.id === selectedId);
+      if (!selected || !selected.data.parentId) return nds;
+      const parentId = selected.data.parentId as string;
 
-    const parentId = selectedNode.data.parentId;
-
-    setNodes(nds => nds.map(n => {
-      if (n.id === selectedId) {
-        return { ...n, data: { ...n.data, isCandidate: false, isActive: true, isDiscarded: false } };
-      }
-      if (n.data.parentId === parentId && n.data.isCandidate) {
-        return { ...n, data: { ...n.data, isDiscarded: true, isActive: false } };
-      }
-      if (n.id === parentId) {
+      return nds.map(n => {
+        if (n.id === selectedId) {
+          return { ...n, data: { ...n.data, isCandidate: false, isActive: true, isDiscarded: false } };
+        }
+        if (n.data.parentId === parentId && n.data.isCandidate && n.id !== selectedId) {
+          return { ...n, data: { ...n.data, isDiscarded: true, isActive: false } };
+        }
         return { ...n, data: { ...n.data, isActive: false } };
-      }
-      return { ...n, data: { ...n.data, isActive: false } };
-    }));
+      });
+    });
 
     setEdges(eds => eds.map(e => {
       if (e.target === selectedId) {
-        return { ...e, animated: false, style: { stroke: "var(--foreground)", opacity: 0.5, strokeWidth: 2.5 }, data: { ...e.data, isSolid: true, isCandidate: false } };
+        return { ...e, animated: false, style: { stroke: "var(--foreground)", opacity: 0.4, strokeWidth: 2.5 }, data: { ...e.data, isCandidate: false } };
       }
-      if (e.source === parentId && e.target !== selectedId) {
-        return { ...e, animated: false, style: { stroke: "var(--line-strong)", opacity: 0.1, strokeWidth: 1 }, data: { ...e.data, isSolid: false, isCandidate: true } };
+      const targetNode = nodes.find(n => n.id === e.target);
+      if (targetNode?.data.parentId === nodes.find(n => n.id === selectedId)?.data.parentId && e.target !== selectedId) {
+        return { ...e, animated: false, style: { stroke: "var(--foreground)", opacity: 0.06, strokeWidth: 1 }, data: { ...e.data } };
       }
       return e;
     }));
 
     setActiveNodeId(selectedId);
-    setHasActiveCandidates(false);
-  }, [nodes, setNodes, setEdges]);
+    setTimeout(() => fitView({ duration: 600, padding: 0.2 }), 100);
+  }, [nodes, setNodes, setEdges, fitView]);
 
   const resetAll = useCallback(() => {
     setNodes([{
       id: "root",
       type: "glassNode",
-      position: { x: window.innerWidth / 2 - 200, y: window.innerHeight / 2 - 100 },
+      position: { x: 0, y: 0 },
       data: { text: "", isActive: true, status: "idle", isCandidate: false, stepNumber: 1 },
     }]);
     setEdges([]);
-  }, [setNodes, setEdges]);
-
-  const onConnect = useCallback((params: Connection) => setEdges((eds) => addEdge(params, eds)), [setEdges]);
+    setActiveNodeId("root");
+    localStorage.removeItem(STORAGE_KEY);
+    setTimeout(() => fitView({ duration: 400, padding: 0.3 }), 100);
+  }, [setNodes, setEdges, fitView]);
 
   const exportImage = async () => {
-    const el = document.querySelector(".copy-canvas-container") as HTMLElement;
+    const el = document.querySelector(".react-flow") as HTMLElement;
     if (!el) return;
-    const url = await toPng(el, { backgroundColor: "#f8fafc" });
-    const link = document.createElement("a");
-    link.download = "copy-spatial.png";
-    link.href = url;
-    link.click();
+    try {
+      const url = await toPng(el, { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--background").trim() || "#fff" });
+      const link = document.createElement("a");
+      link.download = "copychain.png";
+      link.href = url;
+      link.click();
+      showNotice("Exported!");
+    } catch { showNotice("Export failed"); }
   };
 
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setContextOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const onConnect = useCallback((params: Connection) => setEdges(eds => addEdge(params, eds)), [setEdges]);
+
   const contextValue = {
-    updateNodeText,
-    reactivateNode: (id: string) => setActiveNodeId(id),
-    generateOptions,
-    selectVersion,
-    hasActiveCandidates,
-    showPathNumbers,
+    updateNodeText, reactivateNode, generateFromNode, selectVersion,
+    activeNodeId, isGenerating,
   };
 
   return (
-      <CanvasContext.Provider value={contextValue}>
-        <div className="copy-canvas-container">
-          <div className="brand" style={{ display: 'flex', alignItems: 'center' }}>
-            Copy Chain 
-            <span style={{ 
-              fontSize: '0.42rem', 
-              padding: '2px 5px', 
-              background: 'var(--foreground)', 
-              color: 'var(--background)',
-              borderRadius: '4px', 
-              letterSpacing: '0.08em',
-              fontWeight: 900,
-              marginLeft: '8px',
-              verticalAlign: 'middle',
-              display: 'inline-flex',
-              alignItems: 'center',
-              lineHeight: 1
-            }}>ALPHA</span>
+    <CanvasContext.Provider value={contextValue}>
+      <div className="copy-canvas-container">
+        {/* Brand */}
+        <div className="brand">
+          Copy Chain
+          <span className="brand-tag">ALPHA</span>
+        </div>
+
+        {/* Corner actions */}
+        <div className="corner-actions top-right">
+          <div className="fab" onClick={() => {
+            if (theme === "light") setTheme("warm");
+            else if (theme === "warm") setTheme("dark");
+            else setTheme("light");
+          }} title="Toggle Theme">
+            {theme === "light" && <Circle size={18} style={{ opacity: 0.5 }} />}
+            {theme === "warm" && <Sun size={18} />}
+            {theme === "dark" && <Moon size={18} fill="currentColor" />}
           </div>
+          <div className="fab" onClick={resetAll} title="Reset Canvas"><RotateCcw size={18} /></div>
+          <div className="fab" onClick={exportImage} title="Export PNG"><ImageDown size={18} /></div>
+          <div className="fab" onClick={() => document.documentElement.requestFullscreen?.()} title="Fullscreen"><Expand size={18} /></div>
+        </div>
 
-          <div className="corner-actions bottom-left">
-            <CenterViewButton />
+        <div className="corner-actions bottom-left">
+          <div className="fab" onClick={() => fitView({ duration: 800, padding: 0.2 })} title="Center View">
+            <Maximize size={18} />
           </div>
+        </div>
 
-          <div className="corner-actions top-right">
-            <div className="fab" onClick={() => {
-              if (theme === 'light') setTheme('warm');
-              else if (theme === 'warm') setTheme('dark');
-              else setTheme('light');
-            }} title="Toggle Theme">
-              {theme === 'light' && <Circle className="w-5 h-5 opacity-50" />}
-              {theme === 'warm' && <Sun className="w-5 h-5 text-amber-700" />}
-              {theme === 'dark' && <Moon className="w-5 h-5 text-slate-400" fill="currentColor" />}
-            </div>
-            <div className={`fab ${showPathNumbers ? "bg-black text-white" : ""}`} onClick={() => setShowPathNumbers(!showPathNumbers)} title="Toggle Path Labels"><MapIcon /></div>
-            <div className="fab" onClick={resetAll} title="Reset Canvas"><RotateCcw /></div>
-            <div className="fab" onClick={exportImage} title="Export PNG"><ImageDown /></div>
-            <div className="fab" onClick={() => document.documentElement.requestFullscreen()} title="Fullscreen"><Expand /></div>
-          </div>
+        {/* Canvas */}
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+          fitView
+          fitViewOptions={{ padding: 0.3 }}
+          minZoom={0.3}
+          maxZoom={2}
+        >
+          <Background gap={40} color="var(--line)" variant={BackgroundVariant.Lines} />
+        </ReactFlow>
 
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
-            defaultViewport={{ x: 0, y: 0, zoom: 0.95 }}
-          >
-            <Background gap={40} color="var(--line)" variant={BackgroundVariant.Lines} />
-          </ReactFlow>
-
-          {/* Text Bank — Morphing UI Component */}
-          {/* Text Bank — Morphing UI Component */}
-          <motion.div
-            layout
-            initial={false}
-            animate={{
-              width: contextOpen ? 340 : 130,
-              height: contextOpen ? 280 : 44,
-              borderRadius: contextOpen ? 24 : 22,
-            }}
-            transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            style={{ 
-              position: 'fixed',
-              right: '40px', 
-              bottom: '32px',
-              zIndex: 2000,
-              background: "var(--surface)",
-              backdropFilter: "blur(24px) saturate(160%)",
-              WebkitBackdropFilter: "blur(24px) saturate(160%)",
-              border: "1px solid var(--line-strong)",
-              boxShadow: "0 12px 40px -10px rgba(0, 0, 0, 0.2)",
-              overflow: 'hidden',
-              display: 'flex',
-              flexDirection: 'column',
-              boxSizing: 'border-box',
-            }}
-          >
-            <AnimatePresence mode="wait">
-              {!contextOpen ? (
-                <motion.div
-                  key="button"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    fontSize: '0.65rem',
-                    fontWeight: 800,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.12em',
-                    color: 'var(--foreground)',
-                    whiteSpace: 'nowrap',
-                  }}
-                  onClick={() => setContextOpen(true)}
-                >
-                  {userContext ? "✦ Text Bank" : "Text Bank"}
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="panel"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  style={{
-                    padding: '24px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    height: '100%',
-                    width: '100%',
-                    boxSizing: 'border-box',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                    <span style={{ fontSize: '0.6rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em', opacity: 0.4 }}>Text Bank</span>
-                    <div 
-                      onClick={() => setContextOpen(false)}
-                      style={{ cursor: 'pointer', opacity: 0.3, padding: '4px' }}
-                    >
-                      <Plus className="rotate-45" size={16} />
-                    </div>
-                  </div>
-                  
-                  <textarea
-                    style={{
-                      width: "100%",
-                      background: "rgba(0,0,0,0.04)",
-                      borderRadius: 12,
-                      padding: "16px",
-                      fontSize: "0.85rem",
-                      border: "none",
-                      outline: "none",
-                      resize: "none",
-                      flexGrow: 1,
-                      fontFamily: "inherit",
-                      color: "var(--foreground)",
-                      lineHeight: 1.5,
-                      boxSizing: 'border-box',
-                    }}
-                    value={userContext}
-                    onChange={(e) => setUserContext(e.target.value)}
-                    placeholder="Voice, audience, banned words..."
-                    autoFocus
-                  />
-                  
-                  <button
-                    onClick={() => setContextOpen(false)}
-                    style={{
-                      marginTop: '16px',
-                      padding: '12px',
-                      background: "var(--foreground)",
-                      color: "var(--background)",
-                      border: 'none',
-                      borderRadius: '12px',
-                      fontSize: '0.7rem',
-                      fontWeight: 800,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.1em',
-                      cursor: 'pointer',
-                      width: '100%',
-                    }}
-                  >
-                    Save Changes
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-
-          <AnimatePresence>
-            {notice && (
-              <motion.div 
-                className="fixed bottom-10 left-1/2 -translate-x-1/2 px-6 py-3 bg-red-500 text-white rounded-full text-sm font-bold shadow-2xl z-[2000]"
-                initial={{ opacity: 0, y: 50 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 50 }}
+        {/* Text Bank */}
+        <motion.div
+          layout
+          initial={false}
+          animate={{
+            width: contextOpen ? 340 : 130,
+            height: contextOpen ? 280 : 44,
+            borderRadius: contextOpen ? 24 : 22,
+          }}
+          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+          className="text-bank-container"
+        >
+          <AnimatePresence mode="wait">
+            {!contextOpen ? (
+              <motion.div
+                key="btn" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="text-bank-btn"
+                onClick={() => setContextOpen(true)}
               >
-                {notice}
+                {userContext ? "* Text Bank" : "Text Bank"}
+              </motion.div>
+            ) : (
+              <motion.div
+                key="panel" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="text-bank-panel"
+              >
+                <div className="text-bank-header">
+                  <span className="text-bank-title">Text Bank</span>
+                  <div onClick={() => setContextOpen(false)} style={{ cursor: "pointer", opacity: 0.3, padding: 4 }}>
+                    <Plus size={16} style={{ transform: "rotate(45deg)" }} />
+                  </div>
+                </div>
+                <textarea
+                  className="text-bank-input"
+                  value={userContext}
+                  onChange={(e) => setUserContext(e.target.value)}
+                  placeholder="Brand voice, audience, banned words..."
+                  autoFocus
+                />
+                <button className="text-bank-save" onClick={() => setContextOpen(false)}>
+                  Save
+                </button>
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
-      </CanvasContext.Provider>
+        </motion.div>
+
+        {/* Notice toast */}
+        <AnimatePresence>
+          {notice && (
+            <motion.div
+              className="notice-toast"
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 30 }}
+            >
+              {notice}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </CanvasContext.Provider>
   );
 }

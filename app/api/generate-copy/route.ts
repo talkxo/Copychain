@@ -8,40 +8,114 @@ type GenerateRequest = {
   recentSteps?: string[];
 };
 
-const hygieneChecklist = [
-  "Preserve the core meaning unless the user explicitly asks to change it.",
-  "Do not invent facts, guarantees, metrics, testimonials, or product details.",
-  "Respect required and banned phrases from user context.",
-  "Match the selected tone and length.",
-  "Remove fluff and repetition.",
-  "Improve clarity and rhythm.",
-  "Keep or strengthen CTA language when present.",
-  "Return only the requested JSON object.",
-];
+const SYSTEM_PROMPT = `You are a senior copy editor. You rewrite copy according to instructions.
 
-function extractOptions(content: string): string[] {
-  const cleaned = content
-    .replace(/^```(?:json)?/i, "")
-    .replace(/```$/i, "")
-    .trim();
+Rules:
+- Preserve the core meaning unless asked to change it.
+- Do not invent facts, guarantees, metrics, testimonials, or product details.
+- Respect required and banned phrases from user context.
+- Match the selected tone and length precisely.
+- Remove fluff and repetition.
+- Improve clarity and rhythm.
+- Keep or strengthen CTA language when present.
+- Return ONLY valid JSON — no markdown fences, no explanation, no commentary.
 
-  try {
-    const parsed = JSON.parse(cleaned) as { options?: unknown };
-    if (Array.isArray(parsed.options)) {
-      return parsed.options
-        .filter((option): option is string => typeof option === "string")
-        .map((option) => option.trim())
-        .filter(Boolean)
-        .slice(0, 3);
-    }
-  } catch {
-    return cleaned
-      .split(/\n+(?=\d+[.)]\s|- )/)
-      .map((line) => line.replace(/^\s*(?:\d+[.)]|-)\s*/, "").trim())
-      .filter(Boolean)
-      .slice(0, 3);
+Output format (exactly this structure):
+{"options":["option 1","option 2","option 3"]}
+
+Each option must be a complete, standalone rewrite of the copy.`;
+
+function extractOptions(content: string, originalText: string): string[] {
+  let cleaned = content.trim();
+
+  // Strip <think>...</think> reasoning blocks (Nemotron models)
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+  // Strip markdown code fences
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+
+  // Try to find JSON object anywhere in the response
+  const jsonMatch = cleaned.match(/\{[\s\S]*"options"\s*:\s*\[[\s\S]*\]\s*\}/);
+  if (jsonMatch) {
+    cleaned = jsonMatch[0];
   }
+
+  const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const originalNorm = normalize(originalText);
+
+  const isValidOption = (o: unknown): o is string =>
+    typeof o === "string" &&
+    o.trim().length > 10 &&
+    normalize(o) !== originalNorm;
+
+  const tryParse = (text: string): string[] => {
+    try {
+      const parsed = JSON.parse(text);
+      const arr = Array.isArray(parsed.options)
+        ? parsed.options
+        : Array.isArray(parsed)
+          ? parsed
+          : null;
+      if (arr) {
+        return arr.filter(isValidOption).map((o: string) => o.trim()).slice(0, 3);
+      }
+    } catch {}
+    return [];
+  };
+
+  let result = tryParse(cleaned);
+  if (result.length === 3) return result;
+
+  // Try to extract a JSON array directly
+  const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
+    result = tryParse(arrayMatch[0]);
+    if (result.length === 3) return result;
+  }
+
   return [];
+}
+
+async function callOpenRouter(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  originalText: string
+): Promise<{ options: string[]; model: string; usage: unknown } | null> {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 2048,
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error(`Model ${model} failed:`, data?.error?.message);
+    return null;
+  }
+
+  const outputText = data?.choices?.[0]?.message?.content?.trim();
+  if (!outputText) return null;
+
+  const options = extractOptions(outputText, originalText);
+  if (options.length < 3) {
+    console.error(`Model ${model} returned ${options.length} valid options, raw:`, outputText.slice(0, 300));
+    return null;
+  }
+
+  return { options, model, usage: data?.usage };
 }
 
 export async function POST(request: Request) {
@@ -60,110 +134,60 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
   }
 
-  const keysString = process.env.OPENROUTER_API_KEYS || process.env.OPENROUTER_API_KEY || "";
-  const keys = keysString.split(",").map(k => k.trim()).filter(Boolean);
+  const apiKey = process.env.OPENROUTER_API_KEY || "";
+  if (!apiKey) {
+    return NextResponse.json({ error: "API key not configured." }, { status: 500 });
+  }
+
   const modelsString = process.env.OPENROUTER_MODELS || "";
-  const models = modelsString.split(",").map(m => m.trim()).filter(Boolean);
+  const models = modelsString
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
 
-  const hfModel = models.find(m => m.startsWith("hf-space:"));
-  const openRouterModels = models.filter(m => !m.startsWith("hf-space:"));
+  if (models.length === 0) {
+    models.push("nvidia/nemotron-3-ultra-550b-a55b:free");
+  }
 
-  const apiKey = keys[Math.floor(Math.random() * keys.length)];
-  const fallbackModel = openRouterModels[Math.floor(Math.random() * openRouterModels.length)] || "google/gemma-3n-e4b-it:free";
+  const contextLine = body.userContext ? `\nUser context: ${body.userContext}` : "";
+  const stepsLine =
+    body.recentSteps && body.recentSteps.length > 0
+      ? `\nRecent rewrites: ${body.recentSteps.join(" → ")}`
+      : "";
 
   const prompt = [
-    "You are a senior copy editor.",
-    "Return exactly three options in JSON.",
-    '{"options":["option 1","option 2","option 3"]}',
+    `Rewrite the following copy in a ${tone} tone.`,
+    `Target length: ${length}.`,
+    contextLine,
+    stepsLine,
     "",
-    `Tone: ${tone}`,
-    `Length: ${length}`,
-    `Context: ${body.userContext || "None"}`,
-    "Copy:",
+    "Copy to rewrite:",
     currentText,
-  ].join("\n");
+    "",
+    'Respond with exactly: {"options":["rewrite 1","rewrite 2","rewrite 3"]}',
+  ]
+    .filter(Boolean)
+    .join("\n");
 
-  // 1. Try HF-First
-  if (hfModel) {
+  // Try each model in sequence until one succeeds
+  const errors: string[] = [];
+  for (const model of models) {
     try {
-      const spaceId = hfModel.replace("hf-space:", "");
-      const baseUrl = `https://${spaceId.replace("/", "-")}.hf.space/gradio_api`;
-      
-      const initiateRes = await fetch(`${baseUrl}/call/v2/predict`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.HF_TOKEN}`
-        },
-        body: JSON.stringify({
-          data: [currentText, tone, length, body.userContext || "", (body.recentSteps || []).join(" | ")]
-        })
-      });
-
-      if (initiateRes.ok) {
-        const { event_id } = await initiateRes.json();
-        let outputText = "";
-        const pollUrl = `${baseUrl}/call/predict/${event_id}`;
-        
-        for (let i = 0; i < 40; i++) { // 20s max
-          const pollRes = await fetch(pollUrl, {
-            headers: { "Authorization": `Bearer ${process.env.HF_TOKEN}` }
-          });
-          const chunk = await pollRes.text();
-          if (chunk.includes("event: complete")) {
-            const dataMatch = chunk.match(/data:\s*\["(.*)"\]/);
-            if (dataMatch) {
-              outputText = dataMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"');
-              break;
-            }
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        if (outputText) {
-          const outputOptions = extractOptions(outputText);
-          if (outputOptions.length === 3) {
-            return NextResponse.json({
-              outputOptions,
-              usage: { model: hfModel, tokens: "HF-Space" },
-            });
-          }
-        }
+      const result = await callOpenRouter(apiKey, model, prompt, currentText);
+      if (result) {
+        return NextResponse.json({
+          outputOptions: result.options,
+          usage: { model: result.model, tokens: result.usage },
+        });
       }
-    } catch (e) {
-      console.error("HF-First failed, falling back:", e);
+      errors.push(`${model}: returned invalid format`);
+    } catch (e: any) {
+      errors.push(`${model}: ${e.message}`);
     }
   }
 
-  // 2. Fallback to OpenRouter Roulette
-  try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: fallbackModel,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-      }),
-    });
-
-    const data = await response.json();
-    if (!response.ok) throw new Error(data?.error?.message || "OpenRouter failed");
-
-    const outputText = data?.choices?.[0]?.message?.content?.trim();
-    const outputOptions = outputText ? extractOptions(outputText) : [];
-
-    if (outputOptions.length !== 3) throw new Error("Invalid response format");
-
-    return NextResponse.json({
-      outputOptions,
-      usage: { model: fallbackModel, tokens: data?.usage },
-    });
-  } catch (error: any) {
-    console.error("Final Fallback Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 502 });
-  }
+  return NextResponse.json(
+    { error: `All models failed: ${errors.join("; ")}` },
+    { status: 502 }
+  );
 }
