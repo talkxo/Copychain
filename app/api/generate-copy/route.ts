@@ -23,22 +23,16 @@ Rules:
 Output format (exactly this structure):
 {"options":["option 1","option 2","option 3"]}
 
-Each option must be a complete, standalone rewrite of the copy.`;
+Each option must be a complete, standalone rewrite of the copy, different from the original and from each other.`;
 
 function extractOptions(content: string, originalText: string): string[] {
   let cleaned = content.trim();
 
-  // Strip <think>...</think> reasoning blocks (Nemotron models)
+  // Strip <think>...</think> reasoning blocks, just in case a reasoning model is used
   cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 
   // Strip markdown code fences
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-
-  // Try to find JSON object anywhere in the response
-  const jsonMatch = cleaned.match(/\{[\s\S]*"options"\s*:\s*\[[\s\S]*\]\s*\}/);
-  if (jsonMatch) {
-    cleaned = jsonMatch[0];
-  }
 
   const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
   const originalNorm = normalize(originalText);
@@ -66,7 +60,14 @@ function extractOptions(content: string, originalText: string): string[] {
   let result = tryParse(cleaned);
   if (result.length === 3) return result;
 
-  // Try to extract a JSON array directly
+  // Try to find a JSON object embedded in surrounding text
+  const jsonMatch = cleaned.match(/\{[\s\S]*"options"\s*:\s*\[[\s\S]*\]\s*\}/);
+  if (jsonMatch) {
+    result = tryParse(jsonMatch[0]);
+    if (result.length === 3) return result;
+  }
+
+  // Try to extract a bare JSON array
   const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
   if (arrayMatch) {
     result = tryParse(arrayMatch[0]);
@@ -76,13 +77,13 @@ function extractOptions(content: string, originalText: string): string[] {
   return [];
 }
 
-async function callOpenRouter(
+async function callGroq(
   apiKey: string,
   model: string,
   prompt: string,
   originalText: string
 ): Promise<{ options: string[]; model: string; usage: unknown } | null> {
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -96,6 +97,7 @@ async function callOpenRouter(
       ],
       temperature: 0.7,
       max_tokens: 2048,
+      response_format: { type: "json_object" },
     }),
   });
 
@@ -134,19 +136,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY || "";
+  const apiKey = process.env.GROQ_API_KEY || "";
   if (!apiKey) {
     return NextResponse.json({ error: "API key not configured." }, { status: 500 });
   }
 
-  const modelsString = process.env.OPENROUTER_MODELS || "";
+  const modelsString = process.env.GROQ_MODELS || "";
   const models = modelsString
     .split(",")
     .map((m) => m.trim())
     .filter(Boolean);
 
   if (models.length === 0) {
-    models.push("nvidia/nemotron-3-ultra-550b-a55b:free");
+    models.push("llama-3.3-70b-versatile", "llama-3.1-8b-instant");
   }
 
   const contextLine = body.userContext ? `\nUser context: ${body.userContext}` : "";
@@ -173,7 +175,7 @@ export async function POST(request: Request) {
   const errors: string[] = [];
   for (const model of models) {
     try {
-      const result = await callOpenRouter(apiKey, model, prompt, currentText);
+      const result = await callGroq(apiKey, model, prompt, currentText);
       if (result) {
         return NextResponse.json({
           outputOptions: result.options,
